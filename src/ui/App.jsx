@@ -3,6 +3,7 @@ import Brands from './Brands';
 import TeamChat from './TeamChat';
 import Channels from './Channels';
 import Leads from './Leads';
+import WhatsAppAdmin from './WhatsAppAdmin'; // 👈 IMPORTANTE
 import { api, API_BASE } from '../lib/api';
 import './styles.css';
 
@@ -10,9 +11,8 @@ const TABS = [
   { id: 'chat', label: 'Team Chat' },
   { id: 'brands', label: 'Brands & Context' },
   { id: 'channels', label: 'Channels' },
+  { id: 'waadmin', label: 'Gestión WhatsApp' }, // 👈 NUEVA
   { id: 'leads', label: 'Leads' },
-  { id: 'wa-admin', label: 'WhatsApp' },  // 👈 nuevo
-
 ];
 
 export default function App() {
@@ -60,8 +60,8 @@ export default function App() {
         {tab === 'chat' && (<TeamChat api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
         {tab === 'brands' && (<Brands api={api} brands={brands} setBrands={setBrands} brandId={brandId} setBrandId={setBrandId} selectedBrand={selectedBrand} />)}
         {tab === 'channels' && (<Channels api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
+        {tab === 'waadmin' && (<WhatsAppAdmin api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
         {tab === 'leads' && (<Leads api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
-        {tab === 'wa-admin' && (<WhatsAppAdmin api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
       </main>
     </div>
   );
