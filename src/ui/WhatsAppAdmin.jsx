@@ -1,254 +1,228 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
-  const [loading, setLoading] = useState(false);
-  const [cfg, setCfg] = useState(null);
-  const [datasources, setDatasources] = useState([]);
-  const [agentMode, setAgentMode] = useState('ventas');
-  const [modelName, setModelName] = useState('');
-  const [temperature, setTemperature] = useState(0.2);
-  const [rulesMd, setRulesMd] = useState('');
-  const [rulesJson, setRulesJson] = useState('');
-  const [superEnabled, setSuperEnabled] = useState(true);
-  const [superKeyword, setSuperKeyword] = useState('#admin');
-  const [superAllowListJson, setSuperAllowListJson] = useState('');
-  const [webhookUrl, setWebhookUrl] = useState('');
-  const [hasPassword, setHasPassword] = useState(false); // 👈
-  const [dsDraft, setDsDraft] = useState({
-    id: null, name: '', kind: 'postgres', url: '', headers_json: '', enabled: true, read_only: true
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [ok, setOk] = useState('');
+  const [connected, setConnected] = useState(null);
+  const [qrData, setQrData] = useState('');
+  const pollRef = useRef(null);
+
+  // Config WA (server-side). Si el endpoint no existe todavía, usamos defaults.
+  const [cfg, setCfg] = useState({
+    agent_mode: 'ventas',     // ventas | reservas | auto
+    model_name: '',           // ej: gpt-4o-mini
+    temperature: 0.2,
+    rules_md: '',
+    rules_json: '',
+    super_enabled: true,
+    super_keyword: '#admin',
+    super_allow_list: '',     // CSV, ej: 549351XXXXXXX,54911YYYYYYY
+    super_password_new: '',   // para rotar password
+    super_password_new2: '',
   });
-  const [msg, setMsg] = useState('');
 
-  // password UI
-  const [currentPw, setCurrentPw] = useState('');
-  const [newPw, setNewPw] = useState('');
-  const [newPw2, setNewPw2] = useState('');
+  const selectedBrand = useMemo(
+    () => brands.find(b => b.id === brandId) || null,
+    [brands, brandId]
+  );
 
-  async function load() {
+  useEffect(() => {
+    setErr(''); setOk('');
     if (!brandId) return;
-    setLoading(true);
-    try {
-      const r = await api(`/api/wa/config?brand_id=${brandId}`);
-      const c = r.config;
-      setCfg(c || null);
-      setDatasources(r.datasources || []);
-      setWebhookUrl(r.webhook_example || '');
-      setAgentMode(c?.agent_mode || 'ventas');
-      setModelName(c?.model_name || '');
-      setTemperature(c?.temperature ?? 0.2);
-      setRulesMd(c?.rules_md || '');
-      setRulesJson(c?.rules_json || '');
-      setSuperEnabled(c?.super_enabled ?? true);
-      setSuperKeyword(c?.super_keyword || '#admin');
-      setSuperAllowListJson(c?.super_allow_list_json || '');
-      setHasPassword(!!r.has_password); // 👈
-    } catch (e) {
-      setMsg('Error cargando config: ' + e.message);
-    } finally {
-      setLoading(false);
+
+    (async () => {
+      try {
+        // Intentamos leer configuración. Si 404, seguimos con defaults.
+        const res = await api(`/api/wa/config?brand_id=${brandId}`);
+        if (res && typeof res === 'object') {
+          setCfg(prev => ({
+            ...prev,
+            agent_mode: res.agent_mode ?? prev.agent_mode,
+            model_name: res.model_name ?? prev.model_name,
+            temperature: typeof res.temperature === 'number' ? res.temperature : prev.temperature,
+            rules_md: res.rules_md ?? prev.rules_md,
+            rules_json: res.rules_json ?? prev.rules_json,
+            super_enabled: typeof res.super_enabled === 'boolean' ? res.super_enabled : prev.super_enabled,
+            super_keyword: res.super_keyword ?? prev.super_keyword,
+            super_allow_list: (res.super_allow_list || res.super_allow_list_json || '')
+              .toString()
+              .replace(/[\[\]"]/g, ''), // normalizamos si viene como JSON de array
+          }));
+        }
+      } catch (e) {
+        // Si el endpoint no está implementado aún, lo ignoramos
+        console.debug('GET /api/wa/config no disponible:', e?.message || e);
+      }
+    })();
+  }, [brandId, api]);
+
+  const onChange = (field, val) => setCfg(prev => ({ ...prev, [field]: val }));
+
+  const saveCfg = async () => {
+    if (!brandId) return alert('Elegí una marca');
+    if (cfg.super_password_new && cfg.super_password_new !== cfg.super_password_new2) {
+      return alert('Las contraseñas de admin no coinciden');
     }
-  }
-
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [brandId]);
-
-  const save = async () => {
-    if (!brandId) return alert('Elegí marca');
+    setBusy(true); setErr(''); setOk('');
     try {
-      setMsg('Guardando...');
       const body = {
         brand_id: brandId,
-        agent_mode: agentMode,
-        model_name: modelName || null,
-        temperature: Number(temperature) || 0.2,
-        rules_md: rulesMd || null,
-        rules_json: rulesJson || null,
-        super_enabled: !!superEnabled,
-        super_keyword: superKeyword || '#admin',
-        super_allow_list_json: superAllowListJson || null,
+        agent_mode: cfg.agent_mode,
+        model_name: cfg.model_name || null,
+        temperature: Number(cfg.temperature) || 0.2,
+        rules_md: cfg.rules_md || '',
+        rules_json: cfg.rules_json || '',
+        super_enabled: !!cfg.super_enabled,
+        super_keyword: cfg.super_keyword || '#admin',
+        super_allow_list: (cfg.super_allow_list || '').split(',').map(s => s.trim()).filter(Boolean),
+        super_password_new: cfg.super_password_new || null, // si viene null, backend no rota
       };
-      await api('/api/wa/config/save', { method: 'POST', body });
-      setMsg('Guardado ✅');
-      load();
+      // PUT recomendado; si tu backend usa POST, adaptá aquí.
+      const r = await api('/api/wa/config', { method: 'PUT', body });
+      setOk('Configuración guardada');
+      // limpiamos campo de password para no dejarlo en memoria
+      setCfg(prev => ({ ...prev, super_password_new: '', super_password_new2: '' }));
     } catch (e) {
-      setMsg('Error guardando: ' + e.message);
+      setErr(`Error guardando configuración: ${e.message}`);
+    } finally {
+      setBusy(false);
     }
   };
 
-  const setPassword = async () => {
-    if (!brandId) return alert('Elegí marca');
-    if (!newPw || newPw.length < 6) return alert('El password nuevo debe tener al menos 6 caracteres');
-    if (newPw !== newPw2) return alert('Las contraseñas no coinciden');
+  const startConnect = async () => {
+    if (!brandId) return alert('Elegí una marca');
+    setBusy(true); setErr(''); setOk('');
     try {
-      const body = { brand_id: brandId, new_password: newPw, current_password: hasPassword ? currentPw : undefined };
-      await api('/api/wa/config/set_password', { method: 'POST', body });
-      setMsg('Password actualizado ✅');
-      setCurrentPw(''); setNewPw(''); setNewPw2('');
-      setHasPassword(true);
+      await api(`/api/wa/start?brand_id=${brandId}`, { method: 'POST' });
+      setOk('Instancia creada/conectando…');
+      startPolling();
     } catch (e) {
-      setMsg('Error password: ' + e.message);
-    }
+      setErr(`Error iniciando WA: ${e.message}`);
+    } finally { setBusy(false); }
   };
 
-  const editDs = (ds) => {
-    setDsDraft({
-      id: ds?.id || null,
-      name: ds?.name || '',
-      kind: ds?.kind || 'postgres',
-      url: ds?.url || '',
-      headers_json: ds?.headers_json || '',
-      enabled: !!(ds?.enabled ?? true),
-      read_only: !!(ds?.read_only ?? true),
-      brand_id: brandId,
-    });
-  };
-
-  const upsertDs = async () => {
-    if (!brandId) return alert('Elegí marca');
+  const fetchQR = async () => {
+    if (!brandId) return alert('Elegí una marca');
+    setBusy(true); setErr(''); setOk('');
     try {
-      const body = { ...dsDraft, brand_id: brandId };
-      await api('/api/wa/datasource/upsert', { method: 'POST', body });
-      setMsg('Datasource guardado ✅');
-      setDsDraft({ id: null, name: '', kind: 'postgres', url: '', headers_json: '', enabled: true, read_only: true });
-      load();
+      const r = await api(`/api/wa/qr?brand_id=${brandId}`);
+      setConnected(r.connected ?? null);
+      setQrData(r.qr || '');
+      if (r.connected) setOk('WhatsApp conectado ✅');
     } catch (e) {
-      setMsg('Error guardando DS: ' + e.message);
-    }
+      setErr(`Error consultando QR: ${e.message}`);
+    } finally { setBusy(false); }
   };
 
-  const delDs = async (id) => {
-    if (!confirm('¿Eliminar datasource?')) return;
-    try {
-      await api(`/api/wa/datasource/delete?id=${id}`, { method: 'DELETE' });
-      setMsg('Datasource eliminado');
-      load();
-    } catch (e) {
-      setMsg('Error eliminando DS: ' + e.message);
-    }
+  const startPolling = () => {
+    clearInterval(pollRef.current);
+    let count = 0;
+    pollRef.current = setInterval(async () => {
+      count += 1;
+      try {
+        const r = await api(`/api/wa/qr?brand_id=${brandId}`);
+        setConnected(r.connected ?? null);
+        setQrData(r.qr || '');
+        if (r.connected) {
+          clearInterval(pollRef.current);
+          setOk('WhatsApp conectado ✅');
+        }
+      } catch { /* ignore */ }
+      if (count > 30) clearInterval(pollRef.current);
+    }, 3000);
   };
 
-  const testDs = async () => {
+  useEffect(() => () => clearInterval(pollRef.current), []);
+
+  // Test de envío (opcional): si tu backend expone /api/wa/test
+  const [testTo, setTestTo] = useState('');
+  const [testMsg, setTestMsg] = useState('Hola! Prueba desde Gestión WhatsApp');
+
+  const sendTest = async () => {
+    if (!brandId) return alert('Elegí una marca');
+    if (!testTo.trim()) return alert('Ingresá un número destino (código país, sin +)');
+    setBusy(true); setErr(''); setOk('');
     try {
-      const r = await api('/api/wa/datasource/test', { method: 'POST', body: { ...dsDraft, brand_id: brandId } });
-      setMsg('Test DS → ' + JSON.stringify(r));
+      const r = await api('/api/wa/test', { method: 'POST', body: { brand_id: brandId, to: testTo.trim(), text: testMsg } });
+      setOk('Mensaje de prueba enviado');
     } catch (e) {
-      setMsg('Error test DS: ' + e.message);
-    }
+      setErr(`Error enviando prueba: ${e.message}`);
+    } finally { setBusy(false); }
   };
 
   return (
     <div className="card">
       <h2>Gestión WhatsApp</h2>
+
       <div className="row">
         <select className="select" value={brandId || ''} onChange={e => setBrandId(Number(e.target.value) || null)}>
           <option value=''>Seleccionar marca</option>
           {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
-        {loading && <span className="hint">cargando…</span>}
+        {selectedBrand && <div className="hint">Marca seleccionada: <b>{selectedBrand.name}</b></div>}
       </div>
 
-      <h3 className="mt16">Agente & Modelo</h3>
+      {err && <div className="err mt8">{err}</div>}
+      {ok && <div className="badge ok mt8">{ok}</div>}
+
+      <h3 className="mt16">Conexión</h3>
       <div className="row">
-        <label className="hint">Agente</label>
-        <select className="select" value={agentMode} onChange={e => setAgentMode(e.target.value)}>
+        <button className="btn" disabled={busy || !brandId} onClick={startConnect}>Crear/Conectar</button>
+        <button className="btn" disabled={busy || !brandId} onClick={fetchQR}>Ver QR / Estado</button>
+      </div>
+      {connected === false && qrData && (
+        <div className="mt10">
+          <div className="hint">Escaneá el QR con WhatsApp</div>
+          <img alt="QR WhatsApp" src={qrData} className="qr" />
+        </div>
+      )}
+      {connected === true && <div className="mt10 badge ok">WhatsApp conectado ✅</div>}
+
+      <h3 className="mt16">Agente</h3>
+      <div className="row">
+        <label className="hint">Modo</label>
+        <select className="select" value={cfg.agent_mode} onChange={e => onChange('agent_mode', e.target.value)}>
           <option value="ventas">Ventas</option>
           <option value="reservas">Reservas</option>
-          <option value="auto">Automático (heurística)</option>
+          <option value="auto">Auto (según intención)</option>
         </select>
-        <label className="hint">Modelo (OpenAI)</label>
-        <input className="input" placeholder="p.ej. gpt-4o-mini" value={modelName} onChange={e => setModelName(e.target.value)} />
+        <label className="hint">Modelo</label>
+        <input className="input" placeholder="gpt-4o-mini" value={cfg.model_name} onChange={e => onChange('model_name', e.target.value)} style={{maxWidth: 220}} />
         <label className="hint">Temp.</label>
-        <input className="input" type="number" step="0.1" min="0" max="1" value={temperature}
-               onChange={e => setTemperature(e.target.value)} style={{ width: 90 }} />
+        <input type="number" className="input" step="0.1" min="0" max="1" value={cfg.temperature}
+          onChange={e => onChange('temperature', e.target.value)} style={{width: 90}} />
       </div>
 
-      <h3 className="mt16">Reglas de negocio</h3>
-      <div className="hint">Markdown</div>
-      <textarea className="textarea" value={rulesMd} onChange={e => setRulesMd(e.target.value)} placeholder="Reglas, políticas, FAQs…" />
-      <div className="hint">JSON (opcional, mini DSL)</div>
-      <textarea className="textarea" value={rulesJson} onChange={e => setRulesJson(e.target.value)} placeholder='{"rules":[{"if":{"contains":["precio"]},"route":"ventas"}]}' />
+      <div className="mt8">
+        <div className="hint">Reglas de negocio (Markdown)</div>
+        <textarea className="textarea" value={cfg.rules_md} onChange={e => onChange('rules_md', e.target.value)} />
+      </div>
+      <div className="mt8">
+        <div className="hint">Reglas estructuradas (JSON)</div>
+        <textarea className="textarea" value={cfg.rules_json} onChange={e => onChange('rules_json', e.target.value)} />
+      </div>
 
+      <h3 className="mt16">Super Admin</h3>
+      <div className="row">
+        <label><input type="checkbox" checked={cfg.super_enabled} onChange={e => onChange('super_enabled', e.target.checked)} /> Habilitar</label>
+        <label className="hint">Keyword</label>
+        <input className="input" placeholder="#admin" value={cfg.super_keyword} onChange={e => onChange('super_keyword', e.target.value)} style={{maxWidth: 160}} />
+        <label className="hint">Números permitidos (CSV)</label>
+        <input className="input grow" placeholder="549351XXXXXXX,54911YYYYYYY" value={cfg.super_allow_list} onChange={e => onChange('super_allow_list', e.target.value)} />
+      </div>
       <div className="row mt8">
-        <button className="btn" onClick={save}>Guardar configuración</button>
+        <input className="input" type="password" placeholder="Nuevo password admin (opcional)" value={cfg.super_password_new} onChange={e => onChange('super_password_new', e.target.value)} />
+        <input className="input" type="password" placeholder="Repetir nuevo password" value={cfg.super_password_new2} onChange={e => onChange('super_password_new2', e.target.value)} />
+        <button className="btn" disabled={busy || !brandId} onClick={saveCfg}>{busy ? '...' : 'Guardar configuración'}</button>
       </div>
 
-      <h3 className="mt16">Super-Admin por WhatsApp</h3>
-      <div className="hint">Keyword y whitelist se guardan en DB. El password se rota acá y se guarda hasheado (PBKDF2).</div>
+      <h3 className="mt16">Prueba rápida</h3>
       <div className="row">
-        <label><input type="checkbox" checked={superEnabled} onChange={e => setSuperEnabled(e.target.checked)} /> habilitado</label>
-        <input className="input" value={superKeyword} onChange={e => setSuperKeyword(e.target.value)} style={{ marginLeft: 8 }} />
+        <input className="input" placeholder="Destino (ej: 549351XXXXXXX)" value={testTo} onChange={e => setTestTo(e.target.value)} />
+        <input className="input grow" placeholder="Mensaje" value={testMsg} onChange={e => setTestMsg(e.target.value)} />
+        <button className="btn" disabled={busy || !brandId} onClick={sendTest}>Enviar</button>
       </div>
-      <div className="hint">Whitelist (JSON array de números sin @… ej: ["549351XXXXXXX","54911YYYYYYY"])</div>
-      <textarea className="textarea" value={superAllowListJson} onChange={e => setSuperAllowListJson(e.target.value)} />
-
-      <div className="hint mt8">
-        Webhook Evolution (configurá en Evolution → Webhook URL):
-        <div><code style={{ fontSize: 12 }}>{webhookUrl || '(guardar primero para ver ejemplo)'}</code></div>
-      </div>
-
-      <h4 className="mt16">Password Admin</h4>
-      {hasPassword && (
-        <div className="row">
-          <input className="input" type="password" placeholder="Password actual"
-                 value={currentPw} onChange={e => setCurrentPw(e.target.value)} />
-        </div>
-      )}
-      <div className="row">
-        <input className="input" type="password" placeholder="Password nuevo (>=6)"
-               value={newPw} onChange={e => setNewPw(e.target.value)} />
-        <input className="input" type="password" placeholder="Repetir password"
-               value={newPw2} onChange={e => setNewPw2(e.target.value)} />
-        <button className="btn" onClick={setPassword}>Guardar password</button>
-      </div>
-
-      <h3 className="mt16">Datasources</h3>
-      <div className="hint">Postgres: usuario de SOLO LECTURA. HTTP: endpoint JSON/CSV propio.</div>
-
-      <div className="row">
-        <input className="input" placeholder="Nombre" value={dsDraft.name} onChange={e => setDsDraft({ ...dsDraft, name: e.target.value })} />
-        <select className="select" value={dsDraft.kind} onChange={e => setDsDraft({ ...dsDraft, kind: e.target.value })}>
-          <option value="postgres">Postgres</option>
-          <option value="http">HTTP</option>
-        </select>
-      </div>
-      <div className="row">
-        <input className="input grow" placeholder="URL" value={dsDraft.url} onChange={e => setDsDraft({ ...dsDraft, url: e.target.value })} />
-      </div>
-      <div className="row">
-        <input className="input grow" placeholder='Headers JSON (opcional)' value={dsDraft.headers_json} onChange={e => setDsDraft({ ...dsDraft, headers_json: e.target.value })} />
-      </div>
-      <div className="row">
-        <label><input type="checkbox" checked={dsDraft.enabled} onChange={e => setDsDraft({ ...dsDraft, enabled: e.target.checked })} /> habilitado</label>
-        <label style={{ marginLeft: 12 }}><input type="checkbox" checked={dsDraft.read_only} onChange={e => setDsDraft({ ...dsDraft, read_only: e.target.checked })} /> solo lectura</label>
-      </div>
-      <div className="row">
-        <button className="btn" onClick={upsertDs}>{dsDraft.id ? 'Actualizar' : 'Agregar'}</button>
-        <button className="btn" onClick={testDs}>Probar</button>
-        {dsDraft.id && <button className="btn" onClick={() => setDsDraft({ id: null, name: '', kind: 'postgres', url: '', headers_json: '', enabled: true, read_only: true })}>Nuevo</button>}
-      </div>
-
-      {!!datasources.length && (
-        <div className="mt10">
-          <table className="table">
-            <thead><tr><th>Nombre</th><th>Tipo</th><th>URL</th><th>Habilitado</th><th></th></tr></thead>
-            <tbody>
-            {datasources.map(ds => (
-              <tr key={ds.id}>
-                <td>{ds.name}</td>
-                <td>{ds.kind}</td>
-                <td><code style={{ fontSize: 12 }}>{ds.url}</code></td>
-                <td>{ds.enabled ? 'Sí' : 'No'}</td>
-                <td>
-                  <button className="btn" onClick={() => editDs(ds)}>Editar</button>
-                  <button className="btn" onClick={() => delDs(ds.id)} style={{ marginLeft: 8 }}>Eliminar</button>
-                </td>
-              </tr>
-            ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {msg && <div className="mt10 hint">{msg}</div>}
     </div>
   );
 }
