@@ -11,6 +11,8 @@ const TABS = [
   { id: 'brands', label: 'Brands & Context' },
   { id: 'channels', label: 'Channels' },
   { id: 'leads', label: 'Leads' },
+  { id: 'wa-admin', label: 'WhatsApp' },  // 👈 nuevo
+
 ];
 
 export default function App() {
@@ -59,6 +61,7 @@ export default function App() {
         {tab === 'brands' && (<Brands api={api} brands={brands} setBrands={setBrands} brandId={brandId} setBrandId={setBrandId} selectedBrand={selectedBrand} />)}
         {tab === 'channels' && (<Channels api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
         {tab === 'leads' && (<Leads api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
+        {tab === 'wa-admin' && (<WhatsAppAdmin api={api} brands={brands} brandId={brandId} setBrandId={setBrandId} />)}
       </main>
     </div>
   );
