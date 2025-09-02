@@ -1,13 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-// Helpers para “entender” respuestas variadas
+// ===== Helpers para interpretar distintas formas de respuesta =====
 function pickConnected(r) {
   if (typeof r?.connected === 'boolean') return r.connected;
-  if (['connected', 'CONNECTED', 'online'].includes(String(r?.status || r?.state || r?.connection))) return true;
-  return false;
+  const s = String(r?.status || r?.state || r?.connection || '').toLowerCase();
+  return s === 'connected' || s === 'online';
 }
 function pickQrDataUrl(r) {
-  const cands = [r?.qr, r?.qrcode, r?.qrCode, r?.image, r?.qrImage, r?.dataUrl, r?.dataURL, r?.data_uri, r?.qr_data_url];
+  const cands = [
+    r?.qr, r?.qrcode, r?.qrCode, r?.image, r?.qrImage,
+    r?.dataUrl, r?.dataURL, r?.data_uri, r?.qr_data_url
+  ];
   for (const v of cands) {
     if (typeof v === 'string' && v.startsWith('data:')) return v;
   }
@@ -16,21 +19,30 @@ function pickQrDataUrl(r) {
 function pickLinkCode(r) {
   const cands = [r?.code, r?.linkCode, r?.link, r?.loginCode];
   for (const v of cands) {
-    if (typeof v === 'string' && v.length > 10) return v;
+    if (typeof v === 'string' && v.length > 8) return v;
   }
   return '';
 }
 function pickPairingCode(r) {
   const cands = [r?.pairingCode, r?.pairing, r?.pin, r?.code_short];
   for (const v of cands) {
-    if (typeof v === 'string' && v.length <= 12) return v;
+    if (typeof v === 'string' && v.length <= 16 && v.length >= 4) return v;
   }
   return '';
 }
 
+// Genera un src de imagen QR con un servicio público de render si no tenemos data URL.
+// (Si querés 100% self-hosted, después cambiamos esto por una lib local de QR.)
+function qrFromText(text) {
+  if (!text) return '';
+  const base = 'https://api.qrserver.com/v1/create-qr-code/';
+  const qs = `?size=280x280&data=${encodeURIComponent(text)}&t=${Date.now()}`;
+  return `${base}${qs}`;
+}
+
 export default function Channels({ api, brands, brandId, setBrandId }) {
   const [connected, setConnected] = useState(null);
-  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [qrDataUrl, setQrDataUrl] = useState(''); // data:image/...;base64,...
   const [pairingCode, setPairingCode] = useState('');
   const [linkCode, setLinkCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -57,12 +69,12 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
     try {
       await api(`/api/wa/start?brand_id=${brandId}`, { method: 'POST' });
       setStatus('Instancia lista. Obteniendo QR/código…');
-      await waQR();      // primer fetch
-      startPolling();    // luego polling
+      await waQR();
+      startPolling();
     } catch (e) {
-      // Si la instancia ya existe, no frenamos: vamos directo a traer el QR
+      // Si la instancia ya existe (403), seguimos igual
       const msg = String(e?.message || e || '').toLowerCase();
-      if (msg.includes('already in use')) {
+      if (msg.includes('already in use') || msg.includes('already exists')) {
         setStatus('Instancia existente. Obteniendo QR/código…');
         await waQR();
         startPolling();
@@ -79,6 +91,7 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
     try {
       const r = await api(`/api/wa/qr?brand_id=${brandId}`);
       setDebugPayload(r);
+      console.log('[WA] /api/wa/qr payload:', r);
 
       const isConnected = pickConnected(r);
       const qr = pickQrDataUrl(r);
@@ -140,15 +153,14 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
     return () => clearInterval(pollRef.current);
   }, []);
 
-  // Fallback: si no hay data URL pero sí "code", generamos la imagen con un servicio público.
-  // Si preferís 100% self-hosted, podemos cambiar esto por una lib de QR en el front.
+  // Computar la imagen a mostrar:
+  // 1) si ya hay data URL del backend, usamos esa
+  // 2) si no, pero tenemos linkCode, generamos un QR a partir del link
+  // 3) si tampoco hay linkCode, pero hay pairingCode, generamos un QR del pairing (mejor que nada)
   const computedQrSrc = (() => {
     if (qrDataUrl) return qrDataUrl;
-    if (linkCode) {
-      const url = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&data='
-        + encodeURIComponent(linkCode);
-      return url;
-    }
+    if (linkCode) return qrFromText(linkCode);
+    if (pairingCode) return qrFromText(pairingCode);
     return '';
   })();
 
@@ -195,27 +207,39 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
 
       {connected === true && <div className="mt10 badge ok">WhatsApp conectado ✅</div>}
 
+      {/* Imagen QR */}
       {connected === false && computedQrSrc && (
         <div className="mt10">
           <img alt="QR WhatsApp" src={computedQrSrc} className="qr" />
         </div>
       )}
 
-      {connected === false && !computedQrSrc && pairingCode && (
+      {/* Si no hay imagen, mostramos datos para ingreso manual */}
+      {connected === false && !computedQrSrc && (pairingCode || linkCode) && (
         <div className="mt10">
-          <div className="hint">Ingresá este código en WhatsApp:</div>
-          <div className="pairing" style={{
-            fontSize: '28px', fontWeight: '700', letterSpacing: '4px',
-            padding: '8px 12px', border: '1px dashed #ccc', display: 'inline-block'
-          }}>
-            {pairingCode}
-          </div>
+          {!!pairingCode && (
+            <>
+              <div className="hint">Ingresá este código en WhatsApp:</div>
+              <div className="pairing" style={{
+                fontSize: '28px', fontWeight: '700', letterSpacing: '4px',
+                padding: '8px 12px', border: '1px dashed #ccc', display: 'inline-block'
+              }}>
+                {pairingCode}
+              </div>
+            </>
+          )}
+          {!!linkCode && (
+            <>
+              <div className="hint" style={{ marginTop: 10 }}>Código de enlace:</div>
+              <code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>{linkCode}</code>
+            </>
+          )}
         </div>
       )}
 
-      {/* Debug visible para ver exactamente qué vuelve del backend */}
+      {/* Debug para ver exactamente qué devuelve el backend */}
       {debugPayload && (
-        <details className="mt16">
+        <details className="mt16" open>
           <summary>Debug (payload)</summary>
           <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
             {JSON.stringify(debugPayload, null, 2)}
