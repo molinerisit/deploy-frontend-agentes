@@ -1,22 +1,52 @@
 import React, { useEffect, useRef, useState } from 'react';
 
+// Helpers para “entender” respuestas variadas
+function pickConnected(r) {
+  if (typeof r?.connected === 'boolean') return r.connected;
+  if (['connected', 'CONNECTED', 'online'].includes(String(r?.status || r?.state || r?.connection))) return true;
+  return false;
+}
+function pickQrDataUrl(r) {
+  const cands = [r?.qr, r?.qrcode, r?.qrCode, r?.image, r?.qrImage, r?.dataUrl, r?.dataURL, r?.data_uri, r?.qr_data_url];
+  for (const v of cands) {
+    if (typeof v === 'string' && v.startsWith('data:')) return v;
+  }
+  return '';
+}
+function pickLinkCode(r) {
+  const cands = [r?.code, r?.linkCode, r?.link, r?.loginCode];
+  for (const v of cands) {
+    if (typeof v === 'string' && v.length > 10) return v;
+  }
+  return '';
+}
+function pickPairingCode(r) {
+  const cands = [r?.pairingCode, r?.pairing, r?.pin, r?.code_short];
+  for (const v of cands) {
+    if (typeof v === 'string' && v.length <= 12) return v;
+  }
+  return '';
+}
+
 export default function Channels({ api, brands, brandId, setBrandId }) {
   const [connected, setConnected] = useState(null);
-  const [qrData, setQrData] = useState('');           // data URL (o vacío)
-  const [pairingCode, setPairingCode] = useState(''); // ej: "WZYEH1YY"
-  const [linkCode, setLinkCode] = useState('');       // string largo que sirve para QR
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [pairingCode, setPairingCode] = useState('');
+  const [linkCode, setLinkCode] = useState('');
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState('');           // Mensaje de estado
+  const [status, setStatus] = useState('');
   const [err, setErr] = useState('');
+  const [debugPayload, setDebugPayload] = useState(null);
   const pollRef = useRef(null);
 
   const clearQrState = () => {
     setConnected(null);
-    setQrData('');
+    setQrDataUrl('');
     setPairingCode('');
     setLinkCode('');
     setStatus('');
     setErr('');
+    setDebugPayload(null);
   };
 
   const waStart = async () => {
@@ -26,11 +56,19 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
     setStatus('Creando/conectando instancia…');
     try {
       await api(`/api/wa/start?brand_id=${brandId}`, { method: 'POST' });
-      setStatus('Instancia creada. Obteniendo QR…');
-      await waQR();      // primer fetch inmediato
-      startPolling();    // y luego polling
+      setStatus('Instancia lista. Obteniendo QR/código…');
+      await waQR();      // primer fetch
+      startPolling();    // luego polling
     } catch (e) {
-      setErr('Error iniciando WA: ' + (e?.message || e));
+      // Si la instancia ya existe, no frenamos: vamos directo a traer el QR
+      const msg = String(e?.message || e || '').toLowerCase();
+      if (msg.includes('already in use')) {
+        setStatus('Instancia existente. Obteniendo QR/código…');
+        await waQR();
+        startPolling();
+      } else {
+        setErr('Error iniciando WA: ' + (e?.message || e));
+      }
     } finally {
       setBusy(false);
     }
@@ -40,26 +78,24 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
     if (!brandId) return alert('Elegí marca');
     try {
       const r = await api(`/api/wa/qr?brand_id=${brandId}`);
-      // r puede traer: { connected, qr (data URL opcional), pairingCode, code }
-      setConnected(Boolean(r.connected));
+      setDebugPayload(r);
 
-      // 1) si viene qr como data URL, usamos eso
-      if (r.qr && typeof r.qr === 'string' && r.qr.startsWith('data:')) {
-        setQrData(r.qr);
-      } else {
-        setQrData('');
-      }
+      const isConnected = pickConnected(r);
+      const qr = pickQrDataUrl(r);
+      const code = pickLinkCode(r);
+      const pairing = pickPairingCode(r);
 
-      // 2) guardamos pairing/code como fallback
-      setPairingCode(r.pairingCode || '');
-      setLinkCode(r.code || '');
+      setConnected(isConnected);
+      setQrDataUrl(qr);
+      setLinkCode(code);
+      setPairingCode(pairing);
 
-      if (r.connected) {
+      if (isConnected) {
         setStatus('WhatsApp conectado ✅');
-      } else if (r.qr || r.code || r.pairingCode) {
+      } else if (qr || code || pairing) {
         setStatus('Escaneá el QR o ingresá el código en WhatsApp');
       } else {
-        setStatus('Esperando código/QR…');
+        setStatus('Esperando QR/código…');
       }
     } catch (e) {
       setErr('Error consultando QR: ' + (e?.message || e));
@@ -73,24 +109,28 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
       count += 1;
       try {
         const r = await api(`/api/wa/qr?brand_id=${brandId}`);
-        setConnected(Boolean(r.connected));
+        setDebugPayload(r);
 
-        if (r.qr && typeof r.qr === 'string' && r.qr.startsWith('data:')) {
-          setQrData(r.qr);
-        }
-        setPairingCode(r.pairingCode || '');
-        setLinkCode(r.code || '');
+        const isConnected = pickConnected(r);
+        const qr = pickQrDataUrl(r);
+        const code = pickLinkCode(r);
+        const pairing = pickPairingCode(r);
 
-        if (r.connected) {
+        setConnected(isConnected);
+        if (qr) setQrDataUrl(qr);
+        if (code) setLinkCode(code);
+        if (pairing) setPairingCode(pairing);
+
+        if (isConnected) {
           setStatus('WhatsApp conectado ✅');
           clearInterval(pollRef.current);
-        } else if (r.qr || r.code || r.pairingCode) {
+        } else if (qr || code || pairing) {
           setStatus('Escaneá el QR o ingresá el código en WhatsApp');
         } else {
-          setStatus('Esperando código/QR…');
+          setStatus('Esperando QR/código…');
         }
       } catch {
-        // ignoramos para no frenar el polling
+        // ignoramos para no cortar el polling
       }
       if (count > 20) clearInterval(pollRef.current); // ~1 minuto
     }, 3000);
@@ -100,10 +140,10 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
     return () => clearInterval(pollRef.current);
   }, []);
 
-  // Fallback de imagen QR si el backend no mandó data URL:
-  // si tenemos "code", generamos un QR remoto (render) sin JS extra.
+  // Fallback: si no hay data URL pero sí "code", generamos la imagen con un servicio público.
+  // Si preferís 100% self-hosted, podemos cambiar esto por una lib de QR en el front.
   const computedQrSrc = (() => {
-    if (qrData) return qrData; // data URL directa desde el backend
+    if (qrDataUrl) return qrDataUrl;
     if (linkCode) {
       const url = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&data='
         + encodeURIComponent(linkCode);
@@ -153,17 +193,14 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
         </div>
       )}
 
-      {/* Estado visual */}
       {connected === true && <div className="mt10 badge ok">WhatsApp conectado ✅</div>}
 
-      {/* Mostrar QR (data URL o generado desde 'code') */}
       {connected === false && computedQrSrc && (
         <div className="mt10">
           <img alt="QR WhatsApp" src={computedQrSrc} className="qr" />
         </div>
       )}
 
-      {/* Si no hay imagen pero sí pairingCode, mostrarlo grande */}
       {connected === false && !computedQrSrc && pairingCode && (
         <div className="mt10">
           <div className="hint">Ingresá este código en WhatsApp:</div>
@@ -174,6 +211,16 @@ export default function Channels({ api, brands, brandId, setBrandId }) {
             {pairingCode}
           </div>
         </div>
+      )}
+
+      {/* Debug visible para ver exactamente qué vuelve del backend */}
+      {debugPayload && (
+        <details className="mt16">
+          <summary>Debug (payload)</summary>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
+            {JSON.stringify(debugPayload, null, 2)}
+          </pre>
+        </details>
       )}
 
       <h3 className="mt16">Facebook</h3>
