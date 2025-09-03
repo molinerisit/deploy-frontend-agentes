@@ -1,4 +1,3 @@
-// frontend/src/ui/WhatsAppAdmin.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
@@ -34,7 +33,9 @@ export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
     if (!brandId) return;
     (async () => {
       try {
+        console.debug('[WAAdmin] GET /api/wa/config', { brandId });
         const res = await api(`/api/wa/config?brand_id=${brandId}`);
+        console.debug('[WAAdmin] /config result:', res);
         // res: { brand, config, has_password, ... }
         const c = res?.config || {};
         setCfg(prev => ({
@@ -91,15 +92,16 @@ export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
     };
     try {
       try {
-        // preferido
+        console.debug('[WAAdmin] PUT /api/wa/config', body);
         await api('/api/wa/config', { method: 'PUT', body });
       } catch (e) {
-        // fallback si no existe PUT
+        console.debug('[WAAdmin] PUT cayó, intento POST /api/wa/config/set', e?.message);
         await api('/api/wa/config/set', { method: 'POST', body });
       }
       setOk('Configuración guardada');
       setCfg(prev => ({ ...prev, super_password_new: '', super_password_new2: '' }));
     } catch (e) {
+      console.error('[WAAdmin] Error guardando configuración:', e);
       setErr(`Error guardando configuración: ${e.message}`);
     } finally { setBusy(false); }
   };
@@ -108,10 +110,13 @@ export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
     if (!brandId) return alert('Elegí una marca');
     setBusy(true); setErr(''); setOk('');
     try {
-      await api(`/api/wa/start?brand_id=${brandId}`, { method: 'POST' });
+      console.debug('[WAAdmin] POST /api/wa/start', { brandId });
+      const r = await api(`/api/wa/start?brand_id=${brandId}`, { method: 'POST' });
+      console.debug('[WAAdmin] /start resp:', r);
       setOk('Instancia creada/conectando…');
       startPolling();
     } catch (e) {
+      console.error('[WAAdmin] Error iniciando WA:', e);
       setErr(`Error iniciando WA: ${e.message}`);
     } finally { setBusy(false); }
   };
@@ -120,11 +125,14 @@ export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
     if (!brandId) return alert('Elegí una marca');
     setBusy(true); setErr(''); setOk('');
     try {
+      console.debug('[WAAdmin] GET /api/wa/qr', { brandId });
       const r = await api(`/api/wa/qr?brand_id=${brandId}`);
+      console.debug('[WAAdmin] /qr resp:', r);
       setConnected(!!r.connected);
       setQrData(r.qr || '');
       if (r.connected) setOk('WhatsApp conectado ✅');
     } catch (e) {
+      console.error('[WAAdmin] Error consultando QR:', e);
       setErr(`Error consultando QR: ${e.message}`);
     } finally { setBusy(false); }
   };
@@ -136,13 +144,16 @@ export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
       count += 1;
       try {
         const r = await api(`/api/wa/qr?brand_id=${brandId}`);
+        console.debug('[WAAdmin] poll /qr resp:', r);
         setConnected(!!r.connected);
         setQrData(r.qr || '');
         if (r.connected) {
           clearInterval(pollRef.current);
           setOk('WhatsApp conectado ✅');
         }
-      } catch {}
+      } catch (e) {
+        console.debug('[WAAdmin] poll /qr error:', e?.message);
+      }
       if (count > 30) clearInterval(pollRef.current);
     }, 3000);
   };
@@ -152,14 +163,21 @@ export default function WhatsAppAdmin({ api, brands, brandId, setBrandId }) {
   // Test envío
   const [testTo, setTestTo] = useState('');
   const [testMsg, setTestMsg] = useState('Hola! Prueba desde Gestión WhatsApp');
+
+  const sanitizeNumber = (s) => (s || '').replace(/\D+/g, ''); // <-- solo dígitos
   const sendTest = async () => {
     if (!brandId) return alert('Elegí una marca');
     if (!testTo.trim()) return alert('Ingresá un número destino (código país, sin +)');
+    const to = sanitizeNumber(testTo.trim());
+    if (!to) return alert('Número inválido');
     setBusy(true); setErr(''); setOk('');
     try {
-      await api('/api/wa/test', { method: 'POST', body: { brand_id: brandId, to: testTo.trim(), text: testMsg } });
+      console.debug('[WAAdmin] POST /api/wa/test', { brandId, to, text: testMsg });
+      const r = await api('/api/wa/test', { method: 'POST', body: { brand_id: brandId, to, text: testMsg } });
+      console.debug('[WAAdmin] /test resp:', r);
       setOk('Mensaje de prueba enviado');
     } catch (e) {
+      console.error('[WAAdmin] Error enviando prueba:', e);
       setErr(`Error enviando prueba: ${e.message}`);
     } finally { setBusy(false); }
   };

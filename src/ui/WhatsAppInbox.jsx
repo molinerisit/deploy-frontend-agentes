@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 
 /**
  * Props:
@@ -35,6 +35,8 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
     notes: "",
   });
 
+  const msgPollRef = useRef(null);
+
   const selectedBrand = useMemo(
     () => brands.find((b) => b.id === brandId) || null,
     [brands, brandId]
@@ -52,10 +54,13 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
         show_archived: String(!!showArchived),
       });
       if (q.trim()) params.set("q", q.trim());
+      console.debug('[WAInbox] GET /api/wa/board', params.toString());
       const data = await api(`/api/wa/board?${params.toString()}`);
+      console.debug('[WAInbox] /board resp:', data);
       setConnected(!!data.connected);
       setColumns(Array.isArray(data.columns) ? data.columns : []);
     } catch (e) {
+      console.error('[WAInbox] /board error:', e);
       setErr(e.message || String(e));
     } finally {
       setLoading(false);
@@ -91,6 +96,7 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
       const payload = JSON.parse(raw);
 
       if (group === "column") {
+        console.debug('[WAInbox] POST /api/wa/chat/bulk_move', { brand_id: brandId, jids: [payload.jid], column: colKey });
         await api("/api/wa/chat/bulk_move", {
           method: "POST",
           body: { brand_id: brandId, jids: [payload.jid], column: colKey || "inbox" },
@@ -124,6 +130,7 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
       }
       await loadBoard();
     } catch (e) {
+      console.error('[WAInbox] Drop error:', e);
       alert(`No se pudo mover: ${e.message}`);
     }
   }
@@ -144,7 +151,17 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
       notes: chat.notes || "",
     });
     await fetchMessages(chat.jid);
+    // mini poll (15s) para ver llegar el auto-ack
+    clearInterval(msgPollRef.current);
+    let c = 0;
+    msgPollRef.current = setInterval(async () => {
+      c += 1;
+      await fetchMessages(chat.jid);
+      if (c >= 5) clearInterval(msgPollRef.current);
+    }, 3000);
   }
+
+  useEffect(() => () => clearInterval(msgPollRef.current), []);
 
   async function fetchMessages(jid) {
     setMsgLoading(true);
@@ -154,10 +171,14 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
         jid,
         limit: "60",
       });
+      console.debug('[WAInbox] GET /api/wa/messages', params.toString());
       const data = await api(`/api/wa/messages?${params.toString()}`);
+      // backend: { ok: true, messages: [...] }
       const arr = data?.messages?.data || data?.messages || data || [];
+      console.debug('[WAInbox] /messages resp count:', Array.isArray(arr) ? arr.length : 'n/a');
       setMessages(Array.isArray(arr) ? arr.slice(0, 60) : []);
-    } catch {
+    } catch (e) {
+      console.error('[WAInbox] /messages error:', e);
       setMessages([]);
     } finally {
       setMsgLoading(false);
@@ -166,14 +187,19 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
 
   async function sendQuick() {
     if (!quickText.trim() || !openChat) return;
+    const payload = { brand_id: brandId, to: openChat.number, text: quickText.trim() };
     try {
-      await api("/api/wa/test", {
-        method: "POST",
-        body: { brand_id: brandId, to: openChat.number, text: quickText.trim() },
-      });
+      console.debug('[WAInbox] POST /api/wa/test', payload);
+      // optimistic update para verlo “ya” en UI
+      setMessages(prev => [
+        ...prev,
+        { key: { fromMe: true, remoteJid: openChat.jid }, message: { conversation: quickText.trim() } }
+      ]);
+      await api("/api/wa/test", { method: "POST", body: payload });
       setQuickText("");
       await fetchMessages(openChat.jid);
     } catch (e) {
+      console.error('[WAInbox] sendQuick error:', e);
       alert(`No se pudo enviar: ${e.message}`);
     }
   }
@@ -185,6 +211,7 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
       .map((t) => t.trim())
       .filter(Boolean);
     try {
+      console.debug('[WAInbox] POST /api/wa/chat/meta', { brand_id: brandId, jid: openChat.jid, ...meta, tags });
       await api("/api/wa/chat/meta", {
         method: "POST",
         body: {
@@ -204,6 +231,7 @@ export default function WhatsAppInbox({ api, brands = [], brandId, setBrandId })
       await loadBoard();
       alert("Meta guardada");
     } catch (e) {
+      console.error('[WAInbox] saveMeta error:', e);
       alert(`Error guardando meta: ${e.message}`);
     }
   }
