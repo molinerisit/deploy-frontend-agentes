@@ -1,3 +1,4 @@
+// frontend/src/ui/Brands.jsx
 import React, { useEffect, useState } from 'react';
 
 export default function Brands({ api, brands, setBrands, brandId, setBrandId, selectedBrand }) {

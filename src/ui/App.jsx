@@ -1,3 +1,4 @@
+// frontend/src/ui/App.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import Brands from "./Brands";
 import TeamChat from "./TeamChat";
