@@ -171,8 +171,8 @@ body {
   margin-top: 12px;
 }
 .col {
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: #000000;
+  border: 1px solid #132e65;
   border-radius: 12px;
   min-height: 220px;
   display: flex;
@@ -206,7 +206,7 @@ body {
 .drawer { position: fixed; inset: 0; display: flex; justify-content: flex-end; z-index: 30; }
 .drawer-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.3); }
 .drawer-body {
-  position: relative; background: #fff; width: min(960px, 95vw); height: 100%;
+  position: relative; background: #0f1218; width: min(960px, 95vw); height: 100%;
   padding: 16px; overflow: auto; box-shadow: -8px 0 24px rgba(0,0,0,.1);
   display: flex; flex-direction: column; gap: 12px;
 }
